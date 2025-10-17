@@ -7,5 +7,5 @@
 test/
 lib/
 temp/
-*/.gitignore
+**/.gitignore
 include/
