@@ -59,10 +59,10 @@ const int grip_hall_pin = 40;
 const int grip_fsr_pin = 41; 
 
 // Fixed Params
-const float max_shaft_angles[STEPPER_NUM] = {0.0};
-const float min_shaft_angles[STEPPER_NUM] = {0.0};
+const float min_shaft_angles[STEPPER_NUM] = { -1.57, -1.57, -3.14, -2.09, -3.14, -2.09, -3.14, -3.14 };
+const float max_shaft_angles[STEPPER_NUM] = { 3.14, 1.57, 3.14, 2.09, 3.14, 2.09, 3.14, 3.14 };
 const float reduction_ratios[STEPPER_NUM] = { 0.0, 17.25405444, 17.25405444, 17.25405444, 17.25405444, 17.25405444, 1 };
-const float default_position[STEPPER_NUM] = {0.0};
+const float default_position[STEPPER_NUM] = { 0, 0.78, 0, 1.57, 0, 0.78, 0, 0};
 
 // Changable Params
 float target_shaft_angles[STEPPER_NUM] = {0.0};
@@ -151,6 +151,31 @@ void steppers_move_n_check() {
     }
 }
 
+void as5600_setup(){
+	// I2C setup
+	Wire.begin(I2C_SDA, I2C_SCL);
+	for(int ch=0; ch<STEPPER_NUM; ch++){
+		TCA9548A(ch);
+		delay(1);
+
+		as5600.begin(AS5600_ADDR);
+		if (as5600.isConnected()) {
+			Serial.print(ch); 
+			Serial.println(": Connected");
+
+			as5600.setDirection(AS5600_CLOCK_WISE);
+			as5600.resetCumulativePosition();
+		}
+		else {
+			Serial.print(ch);
+			Serial.println(": AS5600 not found.");
+		}
+
+	}
+	TCA_disable();
+	esp_log_level_set("i2c.master", ESP_LOG_NONE);
+}
+
 /* 
     =========================
 	TASKS
@@ -182,6 +207,7 @@ void home_steppers_t( void *pvParameters ) {
 				stepper[i].setMaxSpeed(STEPPER_MAX_SPEED);
 				stepper[i].setAcceleration(STEPPER_ACEL);
 			}
+			as5600_setup();
 		}
     }
 }
@@ -241,28 +267,30 @@ void move_steppers_t( void *pvParameters ) {
 }
 
 void check_angles_t( void *pvParameters ) {
-	static uint32_t last_read = 0;
-	static int last_angle = 0;
-    while (true) {
-		if ( millis() - last_read >= ANGLE_UPDATE_MS ){
-			last_read = millis();
-			for ( int ch=0; ch<STEPPER_NUM; ch++ ){
-				TCA9548A(ch);
-				if (as5600.isConnected()){
-					int cumulative = as5600.getCumulativePosition();
-					int rev = as5600.getRevolutions();
-					// feedback_stepper_angles[ch] = map(float(cumulative - ENCODER_RES * rev), 0, ENCODER_RES, 0, 360.0) + 360.0*rev;
-					feedback_stepper_angles[ch] = ((float)(cumulative - ENCODER_RES * rev) * 360.0) / ENCODER_RES + 360.0 * rev;
-					
-					float del = target_stepper_angles[ch] - feedback_stepper_angles[ch];
-					if (fabs(del) != 0) {
-						target_shaft_angles[ch] += del;
-						new_pos_flag = true;
+	while (true) {
+		if (!new_pos_flag){
+			static uint32_t last_read = 0;
+			static int last_angle = 0;
+			if ( millis() - last_read >= ANGLE_UPDATE_MS ){
+				last_read = millis();
+				for ( int ch=0; ch<STEPPER_NUM; ch++ ){
+					TCA9548A(ch);
+					if (as5600.isConnected()){
+						int cumulative = as5600.getCumulativePosition();
+						int rev = as5600.getRevolutions();
+						// feedback_stepper_angles[ch] = map(float(cumulative - ENCODER_RES * rev), 0, ENCODER_RES, 0, 360.0) + 360.0*rev;
+						feedback_stepper_angles[ch] = ((float)(cumulative - ENCODER_RES * rev) * 360.0) / ENCODER_RES + 360.0 * rev;
+						
+						float del = target_stepper_angles[ch] - feedback_stepper_angles[ch];
+						if (fabs(del) <= 5) {
+							target_shaft_angles[ch] += del;
+							new_pos_flag = true;
+						}
+					} 
+					else {
+						Serial.print(ch);
+						Serial.println(": AS5600 connection lost");
 					}
-				} 
-				else {
-					Serial.print(ch);
-					Serial.println(": AS5600 connection lost");
 				}
 			}
 		}
@@ -292,30 +320,6 @@ void setup(){
 		multi.addStepper(stepper[i]);
     }
 
-	// I2C setup
-	Wire.begin(I2C_SDA, I2C_SCL);
-	for(int ch=0; ch<STEPPER_NUM; ch++){
-		TCA9548A(ch);
-		delay(1);
-
-		as5600.begin(AS5600_ADDR);
-		if (as5600.isConnected()) {
-			Serial.print(ch); 
-			Serial.println(": Connected");
-
-			as5600.setDirection(AS5600_CLOCK_WISE);
-			as5600.resetCumulativePosition();
-		}
-		else {
-			Serial.print(ch);
-			Serial.println(": AS5600 not found.");
-		}
-
-	}
-	TCA_disable();
-
-	esp_log_level_set("i2c.master", ESP_LOG_NONE);
-
     // Task Setup
     xTaskCreatePinnedToCore (
 		home_steppers_t,
@@ -344,7 +348,7 @@ void setup(){
 		NULL,
 		0,
 		&move_steppers_h,
-		0
+		1
     );
 
     xTaskCreatePinnedToCore (
@@ -364,7 +368,7 @@ void setup(){
 		NULL,
 		0,
 		&grip_control_h,
-		1
+		0
     );
 
 }
